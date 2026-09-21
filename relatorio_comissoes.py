@@ -412,7 +412,18 @@ class RelatorioComissoesWindow(tk.Toplevel):
             "WHERE IVB.ADMINISTRADORA = RCV.ADMINISTRADORA "
             "AND IVB.PRODUTO = NPV.NOME_PRODUTO "
             "AND IVB.DT_INI_USO = RCV.INI_VIGENCIA "
-            "AND IVB.STATUS <> 'C') BENEFICIOS "
+            "AND IVB.STATUS <> 'C') BENEFICIOS, "
+            "(SELECT COALESCE(SUM(IVC.TARIFA), 0) FROM IMPORTA_VR IVC "
+            "WHERE IVC.ADMINISTRADORA = RCV.ADMINISTRADORA "
+            "AND IVC.PRODUTO = NPV.NOME_PRODUTO "
+            "AND IVC.DT_INI_USO = RCV.INI_VIGENCIA "
+            "AND IVC.STATUS <> 'C') VALOR_CARGA, "
+            "(SELECT COALESCE(SUM(IVT.TARIFA * IVT.TAXA / 100), 0) "
+            "FROM IMPORTA_VR IVT "
+            "WHERE IVT.ADMINISTRADORA = RCV.ADMINISTRADORA "
+            "AND IVT.PRODUTO = NPV.NOME_PRODUTO "
+            "AND IVT.DT_INI_USO = RCV.INI_VIGENCIA "
+            "AND IVT.STATUS <> 'C') VALOR_TAXA "
             "FROM RECIBOS_COMISSAO_VR RCV "
             "LEFT JOIN NOMES_PRODUTOS_VR NPV ON NPV.CONTA = RCV.CONTA "
             "LEFT JOIN PESSOAS PA ON PA.PESSOA = RCV.ADMINISTRADORA "
@@ -438,7 +449,9 @@ class RelatorioComissoesWindow(tk.Toplevel):
         producer_total = Decimal("0")
         producer_benefits = 0
         for row in self.rows:
-            display = list(row)
+            display = list(row[:15])
+            display[8] = row[15]
+            display[9] = row[16]
             display[2] = display[2].strftime("%d/%m/%Y") if display[2] else ""
             admin_name = str(row[12] or row[3] or "")
             producer_name = str(row[13] or row[4] or "")
@@ -545,7 +558,7 @@ class RelatorioComissoesWindow(tk.Toplevel):
             ))
             elements.append(Spacer(1, 2 * mm))
 
-        for row in self.rows:
+        for row in self.report_rows:
             admin_name = str(row[12] or row[3] or "")
             producer_name = str(row[13] or row[4] or "")
             if admin_name != current_admin:
@@ -581,6 +594,12 @@ class RelatorioComissoesWindow(tk.Toplevel):
         )
         document.build(elements)
         self.status.set(f"Relatorio de previa gerado: {target}")
+        if messagebox.askyesno(
+            "Relatorio de previa gerado",
+            "Relatorio gerado com sucesso. Deseja abrir o arquivo agora?",
+            parent=self,
+        ):
+            os.startfile(target)
 
     def emit_voucher(self) -> None:
         """Emite o voucher financeiro usando o modelo ReportBuilder."""
@@ -606,7 +625,18 @@ class RelatorioComissoesWindow(tk.Toplevel):
             "COALESCE(RCV.VALOR_TOT_TAXA, 0), RCV.VALOR_COM, "
             "NPV.NOME_PRODUTO, PA.NOME, PP.NOME, PP.CPF_CNPJ, "
             "PP.OPTOU_SIMPLES, BAN.NOME_BANCO, PP.BANCO, PP.AGENCIA, "
-            "PP.CONTA "
+            "PP.CONTA, "
+            "(SELECT COALESCE(SUM(IVC.TARIFA), 0) FROM IMPORTA_VR IVC "
+            "WHERE IVC.ADMINISTRADORA = RCV.ADMINISTRADORA "
+            "AND IVC.PRODUTO = NPV.NOME_PRODUTO "
+            "AND IVC.DT_INI_USO = RCV.INI_VIGENCIA "
+            "AND IVC.STATUS <> 'C') VALOR_CARGA, "
+            "(SELECT COALESCE(SUM(IVT.TARIFA * IVT.TAXA / 100), 0) "
+            "FROM IMPORTA_VR IVT "
+            "WHERE IVT.ADMINISTRADORA = RCV.ADMINISTRADORA "
+            "AND IVT.PRODUTO = NPV.NOME_PRODUTO "
+            "AND IVT.DT_INI_USO = RCV.INI_VIGENCIA "
+            "AND IVT.STATUS <> 'C') VALOR_TAXA "
             "FROM RECIBOS_COMISSAO_VR RCV "
             "LEFT JOIN NOMES_PRODUTOS_VR NPV ON NPV.CONTA = RCV.CONTA "
             "LEFT JOIN PESSOAS PA ON PA.PESSOA = RCV.ADMINISTRADORA "
@@ -624,7 +654,7 @@ class RelatorioComissoesWindow(tk.Toplevel):
         if producer:
             query += "AND RCV.PRODUTOR = ? "
             parameters.append(producer)
-        query += "ORDER BY RCV.ADMINISTRADORA, RCV.PRODUTOR, NPV.NOME_PRODUTO"
+        query += "ORDER BY PA.NOME, PP.NOME, NPV.NOME_PRODUTO"
         cursor = self.connection.cursor()
         cursor.execute(query, tuple(parameters))
         return cursor.fetchall()
@@ -645,6 +675,16 @@ class RelatorioComissoesWindow(tk.Toplevel):
         if len(digits) == 11:
             return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
         return str(value or "")
+
+    def _next_voucher_number(self) -> int:
+        cursor = self.connection.cursor()
+        cursor.execute(
+            "SELECT GEN_ID(NUMERO_VOUCHER_VR, 1) CONTA FROM RDB$DATABASE"
+        )
+        row = cursor.fetchone()
+        if row is None or row[0] is None:
+            raise RuntimeError("Nao foi possivel gerar o numero do voucher.")
+        return int(row[0])
 
     def _save_voucher_pdf(self, reference_date: date) -> None:
         target = filedialog.asksaveasfilename(
@@ -703,11 +743,12 @@ class RelatorioComissoesWindow(tk.Toplevel):
             first = admin_rows[0]
             producer_name = str(first[14] or first[5] or "")
             producer_document = self._document(first[15])
-            total_base = sum((Decimal(str(row[9] or 0)) for row in admin_rows), Decimal("0"))
-            total_tax = sum((Decimal(str(row[10] or 0)) for row in admin_rows), Decimal("0"))
+            total_base = sum((Decimal(str(row[21] or 0)) for row in admin_rows), Decimal("0"))
+            total_tax = sum((Decimal(str(row[22] or 0)) for row in admin_rows), Decimal("0"))
             total_commission = sum(
                 (Decimal(str(row[11] or 0)) for row in admin_rows), Decimal("0")
             )
+            voucher_number = self._next_voucher_number()
             elements.append(Paragraph("AUTORIZAÇÃO PARA PAGAMENTO", title_style))
 
             header_label = ParagraphStyle(
@@ -722,24 +763,29 @@ class RelatorioComissoesWindow(tk.Toplevel):
                 fontSize=7,
                 leading=8,
             )
+            emphasized_value = ParagraphStyle(
+                "VoucherEmphasizedValue",
+                parent=header_value,
+                fontName="Helvetica-Bold",
+            )
 
             def header_text(value: Any, style: ParagraphStyle) -> Paragraph:
                 return Paragraph(str(value or "").replace("&", "&amp;"), style)
 
             header = Table(
                 [
-                    [header_text("DATA DE PAGAMENTO", header_label),
-                     header_text(reference_date.strftime("%d/%m/%Y"), header_value),
-                     header_text("VOUCHER", header_label),
-                     header_text(first[1] or 0, header_value)],
                     [header_text("FAVORECIDO", header_label),
-                     header_text(producer_name, header_value),
+                     header_text(producer_name, emphasized_value),
                      header_text("CNPJ", header_label),
                      header_text(producer_document, header_value)],
                     [header_text("ADMINISTRADORA", header_label),
-                     header_text(admin_name, header_value),
+                     header_text(admin_name, emphasized_value),
                      header_text("OPÇÃO SIMPLES", header_label),
                      header_text(first[16], header_value)],
+                    [header_text("DATA DE VIGÊNCIA CRÉDITO", header_label),
+                     header_text(reference_date.strftime("%d/%m/%Y"), header_value),
+                     header_text("VOUCHER", header_label),
+                     header_text(voucher_number, header_value)],
                     [header_text("CRÉDITO CONTA CORRENTE", header_label),
                      header_text(first[17], header_value),
                      header_text("AGÊNCIA", header_label),
@@ -749,7 +795,7 @@ class RelatorioComissoesWindow(tk.Toplevel):
                      header_text("C/C", header_label),
                      header_text(first[20], header_value)],
                 ],
-                colWidths=[44 * mm, 44 * mm, 44 * mm, 44 * mm],
+                colWidths=[30 * mm, 82 * mm, 30 * mm, 38 * mm],
             )
             header.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, -1), blue),
@@ -769,8 +815,8 @@ class RelatorioComissoesWindow(tk.Toplevel):
             for row in admin_rows:
                 details.append([
                     str(row[12] or ""),
-                    self._money(row[9]),
-                    self._money(row[10]),
+                    self._money(row[21]),
+                    self._money(row[22]),
                     f"{Decimal(str(row[7] or 0)):.2f}%",
                     self._money(row[11]),
                 ])
@@ -876,7 +922,7 @@ class RelatorioComissoesWindow(tk.Toplevel):
             current_producer = None
             producer_total = Decimal("0")
             producer_benefits = 0
-            for row in self.rows:
+            for row in self.report_rows:
                 admin_name = str(row[12] or row[3] or "")
                 producer_name = str(row[13] or row[4] or "")
                 if admin_name != current_admin:

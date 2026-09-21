@@ -319,7 +319,8 @@ WHERE CONTROLE = ?
 ## 10. Fluxo de geracao de previa
 
 1. Usuario abre o relatorio.
-2. Seleciona administradora.
+2. Opcionalmente seleciona administradora. Sem esse filtro, todas as
+   administradoras com regra ativa e producao na competencia sao processadas.
 3. Opcionalmente seleciona produtor.
 4. Seleciona a competencia no calendario.
 5. O sistema converte a competencia para `datetime.date`.
@@ -336,6 +337,10 @@ WHERE CONTROLE = ?
 15. O usuario pode salvar o **Relatorio de Previa**, em A4 paisagem.
 16. O usuario pode emitir separadamente o **Voucher**, em A4 retrato,
     usando o modelo visual do ReportBuilder Delphi.
+
+Quando somente a data de inicio de vigencia estiver preenchida, a consulta
+processa o lote completo e ordena as administradoras alfabeticamente. O mesmo
+lote e utilizado para a emissao dos vouchers.
 
 ## 11. Regras de calculo
 

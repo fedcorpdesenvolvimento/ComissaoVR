@@ -174,7 +174,9 @@ produtos quando existe registro ativo em `TAB_COMISSAO_ADM_VR`.
 ## Fluxo do relatorio
 
 1. Abra **Relatorio de comissoes**.
-2. Selecione a administradora.
+2. Opcionalmente selecione a administradora. Se ela nao for informada, o
+   sistema processara todas as administradoras que tenham regras ativas e
+   producao na competencia.
 3. Opcionalmente selecione o produtor.
 4. Escolha a competencia no calendario.
 5. Clique em **Relatorio de Previa** para gerar o relatorio resumido em
@@ -183,6 +185,9 @@ produtos quando existe registro ativo em `TAB_COMISSAO_ADM_VR`.
 7. Clique em **Emissao de Voucher** para gerar o modelo financeiro baseado no
    ReportBuilder Delphi, em formato A4 retrato.
 8. Opcionalmente exporte tambem o CSV.
+
+Quando somente a competencia for informada, o relatorio e a emissao de voucher
+serao gerados em lote, em ordem alfabetica de administradora.
 
 A competencia e enviada ao Firebird como tipo `DATE`, no formato visual
 brasileiro `dd/mm/yyyy`.
