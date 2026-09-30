@@ -12,6 +12,8 @@
 | Entrada principal | `IMPORTA_VR` |
 | Tabela de regras | `TAB_COMISSAO_ADM_VR` |
 | Tabela de pre-vouchers | `RECIBOS_COMISSAO_VR` |
+| Apolice de referencia | `VR0001` (fixa na tela de cadastro) |
+| Geradores utilizados | `CONTROLE_TAB_COMISSAO_VR`, `GEN_RECIBO_COMISSAO_VR`, `NUMERO_VOUCHER_VR` |
 | Versao de referencia | Reimplementacao dos formularios Delphi de cadastro e geracao automatica |
 
 ## 2. Objetivo
@@ -49,14 +51,17 @@ maior, sem depender exclusivamente da interface grafica.
 
 - Alteracao estrutural das tabelas existentes.
 - Importacao dos beneficios para `IMPORTA_VR`.
-- Emissao definitiva de recibos oficiais.
+- Emissao definitiva de recibos oficiais (baixa de `NUM_RECIBO`).
+- Calculo de retencoes tributarias no voucher.
 - Integracao bancaria.
 - Controle de usuarios e permissoes.
 - Servico web ou API externa.
 
 O formulario Delphi possui um botao para vouchers oficiais, mas a rotina
 correspondente nao esta implementada no arquivo Pascal analisado. Por isso,
-esta especificacao trata apenas da previa.
+esta especificacao trata apenas da previa. O voucher gerado pelo sistema
+reproduz o layout do ReportBuilder, mas nao altera o status nem o numero
+dos pre-vouchers gravados.
 
 ## 4. Arquitetura
 
@@ -74,13 +79,35 @@ Interface grafica
             +-- Consulta de IMPORTA_VR
             +-- Aplicacao das regras de comissao
             +-- Gravacao de RECIBOS_COMISSAO_VR
-            +-- Grade, PDF e CSV
+            +-- Grade, PDF de previa, PDF de voucher e CSV
     |
     +-- database.py
             |
             +-- Leitura do .env
             +-- Conexao Firebird
 ```
+
+### 4.1 Organizacao dos arquivos
+
+```text
+.
+|-- app.py
+|-- database.py
+|-- cadastro_comissao.py
+|-- relatorio_comissoes.py
+|-- .env                          (nao versionado)
+|-- README.md
+|-- ESPECIFICACAO_TECNICA.md
+|-- CONTROLE DE PERCENTUAIS DE COMISSAO VR.xlsx
+|-- cad_comissao_prod_vr.pas / .dfm / .ddp
+`-- Delphi
+    |-- rel_com_vr_automatico.pas / .dfm / .ddp
+    `-- VoucherVR.pdf
+```
+
+Os fontes Delphi sao mantidos apenas como referencia do comportamento
+original e do layout do voucher. Nao sao compilados nem executados pelo
+sistema Python.
 
 ## 5. Componentes
 
@@ -110,24 +137,36 @@ legados possuem caracteres como `a`, `c` e `o` acentuados.
 
 Responsabilidades:
 
-- Implementar a tela equivalente ao formulario `cad_comissao_prod_vr`.
-- Consultar administradoras em `APOLICES` e `PESSOAS`.
-- Consultar produtores pelos campos `FAVOR` e `FAVOR2`.
+- Implementar a tela equivalente ao formulario `cad_comissao_prod_vr`
+  (classe `CadastroComissaoWindow`).
+- Consultar administradoras em `APOLICES` e `PESSOAS` (apolices ativas
+  cujo codigo contem `VR`).
+- Consultar produtores pelos campos `FAVOR` e `FAVOR2` da apolice fixa
+  `VR0001`.
 - Consultar produtos em `NOMES_PRODUTOS_VR`.
 - Evitar produtos duplicados para o produtor.
-- Manter as regras em `TAB_COMISSAO_ADM_VR`.
+- Validar percentuais (0 a 100, formato brasileiro ou ponto decimal).
+- Manter as regras em `TAB_COMISSAO_ADM_VR`, obtendo `CONTROLE` do gerador
+  `CONTROLE_TAB_COMISSAO_VR`.
+
+Valores padrao da tela: `APENAS_COND_TAXA` marcado, `SOBRE_TAXA`
+desmarcado, comissao e desconto em `0,00`.
 
 ### 5.4 `relatorio_comissoes.py`
 
 Responsabilidades:
 
-- Implementar a tela equivalente ao formulario `rel_com_vr_automatico`.
-- Selecionar administradora, produtor e vigencia.
+- Implementar a tela equivalente ao formulario `rel_com_vr_automatico`
+  (classe `RelatorioComissoesWindow`).
+- Selecionar administradora, produtor e vigencia (calendario `tkcalendar`
+  em `pt_BR`, com botao **Hoje**).
 - Consultar beneficios em `IMPORTA_VR`.
 - Aplicar as regras ativas.
-- Criar pre-vouchers.
-- Exibir agrupamentos e totalizadores.
-- Gerar PDF e CSV.
+- Remover pre-vouchers pendentes da competencia e criar os novos, obtendo
+  `CONTROLE_REC` do gerador `GEN_RECIBO_COMISSAO_VR`.
+- Exibir agrupamentos e totalizadores na grade.
+- Gerar o PDF de previa, o PDF de voucher e o CSV.
+- Obter o numero de cada voucher impresso do gerador `NUMERO_VOUCHER_VR`.
 
 ## 6. Configuracao
 
@@ -184,13 +223,18 @@ Campos utilizados:
 - `NOME`
 - `STATUS`
 - `CPF_CNPJ`
-- Dados bancarios no relatorio legado.
+- `OPTOU_SIMPLES`
+- `BANCO`
+- `AGENCIA`
+- `CONTA`
 
 Uso:
 
 - Resolver o nome da administradora.
 - Resolver o nome do produtor.
 - Obter o codigo interno da pessoa.
+- Fornecer documento, opcao pelo Simples e dados bancarios do favorecido
+  no voucher.
 
 ### 8.2 `APOLICES`
 
@@ -283,32 +327,63 @@ NUM_RECIBO = 0
 STATUS = 'A'
 ```
 
+Na gravacao, `DT_EMI_RECIBO` recebe a data atual e `USU_EMI_RECIBO` e
+gravado vazio, pois nao ha controle de usuarios.
+
+### 8.7 `BANCOS`
+
+Campos utilizados:
+
+- `COD_BANCO`
+- `NOME_BANCO`
+
+Uso:
+
+- Resolver o nome do banco do favorecido a partir de `PESSOAS.BANCO` na
+  emissao do voucher.
+
+### 8.8 Geradores
+
+| Gerador | Uso |
+|---|---|
+| `CONTROLE_TAB_COMISSAO_VR` | `TAB_COMISSAO_ADM_VR.CONTROLE` na inclusao de regra |
+| `GEN_RECIBO_COMISSAO_VR` | `RECIBOS_COMISSAO_VR.CONTROLE_REC` na geracao de pre-voucher |
+| `NUMERO_VOUCHER_VR` | Numero impresso em cada pagina de voucher |
+
+O numero obtido de `NUMERO_VOUCHER_VR` e consumido a cada emissao e nao e
+gravado em `RECIBOS_COMISSAO_VR`; os registros permanecem com
+`NUM_RECIBO = 0`.
+
 ## 9. Fluxo do cadastro de comissoes
 
 ### 9.1 Novo cadastro
 
 1. Usuario clica em **Novo**.
 2. A tela habilita os campos.
-3. Administradora e carregada pela apolice VR ativa.
+3. Administradora e carregada pelas apolices VR ativas.
 4. O codigo da administradora e obtido em `PESSOAS`.
-5. `FAVOR` e `FAVOR2` sao consultados em `APOLICES`.
+5. `FAVOR` e `FAVOR2` da apolice `VR0001` sao consultados em `APOLICES`.
 6. Os produtores ativos sao carregados em `PESSOAS`.
-7. Os produtos disponiveis sao carregados em `NOMES_PRODUTOS_VR`.
-8. Contas ja cadastradas para o produtor sao excluidas da lista.
-9. Usuario informa percentuais e flags.
-10. O registro e inserido em `TAB_COMISSAO_ADM_VR`.
+7. A grade e preenchida com as regras ativas da administradora.
+8. Os produtos disponiveis sao carregados em `NOMES_PRODUTOS_VR`.
+9. Contas ja cadastradas para o produtor sao excluidas da lista.
+10. Usuario informa percentuais e flags.
+11. O registro e inserido em `TAB_COMISSAO_ADM_VR` com `STATUS = 'A'`.
 
 ### 9.2 Alteracao
 
 1. Usuario seleciona uma linha da grade.
-2. O sistema recupera o controle do registro.
-3. Administradora, produtor e produto ficam bloqueados.
-4. Percentual, desconto e flags ficam editaveis.
-5. O registro e atualizado pelo campo `CONTROLE`.
+2. O sistema recupera o controle do registro e habilita os botoes
+   **Alterar** e **Excluir/Canc.**.
+3. Usuario clica em **Alterar**.
+4. Administradora, produtor e produto ficam bloqueados.
+5. Percentual, desconto e flags ficam editaveis.
+6. O registro e atualizado pelo campo `CONTROLE`.
 
 ### 9.3 Cancelamento
 
-O cancelamento nao exclui fisicamente o registro:
+O cancelamento pede confirmacao ao usuario e nao exclui fisicamente o
+registro:
 
 ```sql
 UPDATE TAB_COMISSAO_ADM_VR
@@ -322,25 +397,37 @@ WHERE CONTROLE = ?
 2. Opcionalmente seleciona administradora. Sem esse filtro, todas as
    administradoras com regra ativa e producao na competencia sao processadas.
 3. Opcionalmente seleciona produtor.
-4. Seleciona a competencia no calendario.
-5. O sistema converte a competencia para `datetime.date`.
-6. Pre-vouchers pendentes da mesma competencia sao removidos para evitar
-   duplicidade.
-7. Os registros de `IMPORTA_VR` sao selecionados.
-8. Os produtos sao relacionados com `NOMES_PRODUTOS_VR`.
-9. As regras ativas sao relacionadas com `TAB_COMISSAO_ADM_VR`.
-10. Os beneficios sao agrupados por administradora, produto e produtor.
-11. A comissao e calculada.
-12. O resultado e gravado em `RECIBOS_COMISSAO_VR`.
-13. A transacao e confirmada.
-14. A grade e atualizada.
-15. O usuario pode salvar o **Relatorio de Previa**, em A4 paisagem.
-16. O usuario pode emitir separadamente o **Voucher**, em A4 retrato,
-    usando o modelo visual do ReportBuilder Delphi.
+4. Seleciona a competencia no calendario ou clica em **Hoje**.
+5. Clica em **Relatorio de Previa**.
+6. O sistema converte a competencia para `datetime.date`.
+7. Pre-vouchers pendentes da mesma competencia sao removidos para evitar
+   duplicidade, respeitando os filtros de administradora e produtor.
+8. Os registros de `IMPORTA_VR` sao selecionados.
+9. Os produtos sao relacionados com `NOMES_PRODUTOS_VR`.
+10. As regras ativas sao relacionadas com `TAB_COMISSAO_ADM_VR`.
+11. Os beneficios sao agrupados por administradora, produto e regra
+    (produtor, percentuais e flags).
+12. A comissao e calculada.
+13. O resultado e gravado em `RECIBOS_COMISSAO_VR`.
+14. A transacao e confirmada.
+15. A grade e atualizada com grupos por administradora e produtor e
+    subtotal por produtor.
+16. O dialogo para salvar o **Relatorio de Previa** e aberto
+    automaticamente (A4 paisagem, `relatorio_previa_AAAAMMDD.pdf`).
+17. O usuario pode emitir separadamente o **Voucher**, em A4 retrato
+    (`VoucherVR_AAAAMMDD.pdf`), usando o modelo visual do ReportBuilder
+    Delphi. A emissao exige que a previa tenha sido gerada na mesma
+    sessao da tela.
+18. O usuario pode exportar o CSV (`relatorio_comissoes_vr.csv`).
+
+Apos gerar cada PDF, o sistema oferece abrir o arquivo.
 
 Quando somente a data de inicio de vigencia estiver preenchida, a consulta
 processa o lote completo e ordena as administradoras alfabeticamente. O mesmo
 lote e utilizado para a emissao dos vouchers.
+
+Em caso de erro durante a geracao, a transacao e revertida e a mensagem e
+exibida ao usuario.
 
 ## 11. Regras de calculo
 
@@ -386,6 +473,18 @@ comissao_final = comissao_bruta - desconto
 
 `PERC_DESC` igual a zero e valido.
 
+### 11.4 Valores gravados
+
+```text
+VALOR_BRUTO    = base (soma da tarifa ou soma da taxa, conforme SOBRE_TAXA)
+VALOR_TOT_TAXA = soma(TARIFA * TAXA / 100)
+VALOR_COM      = comissao_final
+PERC_COM       = PERC_COM da regra
+DESC_COM       = PERC_DESC da regra
+```
+
+Os calculos usam `Decimal` para evitar erros de arredondamento binario.
+
 ## 12. Relatorio
 
 ### 12.1 Agrupamento
@@ -426,21 +525,25 @@ O sistema possui duas saídas PDF independentes:
 
 #### Emissao de Voucher
 
-Replica o modelo `VoucherVR.pdf` do ReportBuilder Delphi:
+Replica o modelo `Delphi/VoucherVR.pdf` do ReportBuilder Delphi:
 
 - Utiliza formato retrato A4.
-- Gera uma pagina por administradora.
-- Contem os blocos **RECIBO DE PAGAMENTO** e
-  **AUTORIZACAO PARA PAGAMENTO**.
-- Apresenta favorecido, documento, opcao pelo Simples, banco, agencia e
-  conta corrente quando esses dados estiverem disponiveis.
+- Gera uma pagina por administradora, com numero de voucher obtido do
+  gerador `NUMERO_VOUCHER_VR`.
+- Contem os blocos **AUTORIZACAO PARA PAGAMENTO** e
+  **RECIBO DE PAGAMENTO**.
+- Apresenta favorecido, CPF/CNPJ formatado, opcao pelo Simples, banco,
+  agencia e conta corrente, obtidos de `PESSOAS` e `BANCOS`. O favorecido
+  e o produtor do primeiro registro do grupo da administradora.
 - Exibe produtos, valor de carga, valor da taxa, percentual de repasse e
-  repasse.
+  repasse, com linha de total.
 - No recibo, o valor bruto e o valor total permanecem iguais ao total do
   repasse enquanto as regras de retencao tributaria nao forem definidas.
-- Exibe os tributos do recibo com valor zero, conforme o modelo original.
+- Exibe estorno, ISS, IR, COFINS, CSLL e PIS com valor zero, conforme o
+  modelo original.
 - Usa formato monetario brasileiro e o aviso de que a impressao nao e
   documento fiscal.
+- Nao altera `NUM_RECIBO` nem `STATUS` dos pre-vouchers.
 
 ### 12.4 CSV
 
@@ -448,8 +551,13 @@ O CSV:
 
 - Usa codificacao UTF-8 com BOM.
 - Usa `;` como separador.
-- Inclui cabecalho.
-- Inclui detalhes, agrupamentos e totalizadores.
+- Inclui cabecalho com as colunas: `CONTROLE_REC`, `NUM_RECIBO`,
+  `INI_VIGENCIA`, `ADMINISTRADORA`, `PRODUTOR`, `NOME_PRODUTO`, `PERC_COM`,
+  `DESC_COM`, `VALOR_BRUTO`, `VALOR_TAXA`, `VALOR_COM`, `STATUS`,
+  `NOME_ADM`, `NOME_PRODUTOR`, `BENEFICIOS`.
+- Inclui detalhes, linhas de agrupamento (`ADMINISTRADORA:` e
+  `PRODUTOR:`) e totalizadores (`TOTAL PRODUTOR:`).
+- Exige que a previa tenha sido gerada antes da exportacao.
 
 ## 13. Acentuacao e charset
 
@@ -551,10 +659,13 @@ Devem ser validados:
 1. Criar uma camada de servicos independente da interface Tkinter.
 2. Criar repositorios para consultas Firebird.
 3. Criar mapeamento oficial entre produtos importados e produtos de comissao.
-4. Implementar vouchers oficiais.
-5. Implementar controle de usuarios.
-6. Registrar usuario responsavel pela geracao.
+4. Implementar vouchers oficiais, gravando o numero obtido de
+   `NUMERO_VOUCHER_VR` em `NUM_RECIBO` e alterando o status dos registros.
+5. Definir e aplicar as regras de retencao tributaria no recibo.
+6. Implementar controle de usuarios e preencher `USU_EMI_RECIBO`.
 7. Adicionar testes automatizados para as formulas.
 8. Adicionar log de processamento.
 9. Adicionar identificador de lote para cada geracao.
 10. Adicionar validacao de competencia com lista de datas disponiveis.
+11. Permitir escolher o favorecido do voucher quando a administradora
+    tiver mais de um produtor na mesma competencia.
