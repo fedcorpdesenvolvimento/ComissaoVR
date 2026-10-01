@@ -226,10 +226,11 @@ produtos quando existe registro ativo em `TAB_COMISSAO_ADM_VR`.
    producao na competencia.
 3. Opcionalmente selecione o produtor.
 4. Escolha a competencia no calendario ou clique em **Hoje**.
-5. Clique em **Relatorio de Previa**. O sistema apaga os pre-vouchers
-   pendentes da competencia, gera os novos, carrega a grade e abre o
-   dialogo para salvar o PDF resumido em A4 paisagem
-   (`relatorio_previa_AAAAMMDD.pdf`).
+5. Clique em **Relatorio de Previa**. O sistema primeiro faz a varredura
+   de creditos em duplicidade (veja abaixo). Se nao houver duplicidade, ou
+   se o usuario confirmar a continuacao, apaga os pre-vouchers pendentes da
+   competencia, gera os novos, carrega a grade e abre o dialogo para salvar
+   o PDF resumido em A4 paisagem (`relatorio_previa_AAAAMMDD.pdf`).
 6. Clique em **Emissao de Voucher** para gerar o modelo financeiro baseado no
    ReportBuilder Delphi, em A4 retrato (`VoucherVR_AAAAMMDD.pdf`). E
    necessario ter gerado a previa antes.
@@ -243,6 +244,23 @@ serao gerados em lote, em ordem alfabetica de administradora.
 
 A competencia e enviada ao Firebird como tipo `DATE`, no formato visual
 brasileiro `dd/mm/yyyy`.
+
+### Varredura de creditos em duplicidade
+
+Antes de gerar os pre-vouchers, o sistema pesquisa `IMPORTA_VR` na
+competencia informada, para a administradora selecionada ou para todas
+quando o campo estiver vazio.
+
+Dois registros sao considerados duplicados quando **todas** as colunas sao
+identicas, exceto `CNT_IMPORTA` e `DT_IMPORTACAO`. Registros com
+`STATUS = 'C'` nao participam da comparacao. A lista de colunas comparadas
+fica na constante `DUPLICATE_COLUMNS` de `relatorio_comissoes.py`.
+
+Quando ha duplicidade, e exibido um alerta com, para cada administradora,
+o nome, a vigencia e a quantidade de registros duplicados (linhas alem da
+primeira de cada grupo) e de grupos. O usuario escolhe entre continuar a
+geracao ou cancelar. Se continuar, os registros duplicados entram no
+calculo normalmente; a correcao deve ser feita na importacao.
 
 ## Regra de calculo
 

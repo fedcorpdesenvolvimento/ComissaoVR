@@ -400,6 +400,9 @@ WHERE CONTROLE = ?
 4. Seleciona a competencia no calendario ou clica em **Hoje**.
 5. Clica em **Relatorio de Previa**.
 6. O sistema converte a competencia para `datetime.date`.
+6a. O sistema faz a varredura de creditos em duplicidade em `IMPORTA_VR`
+    (secao 10.1). Havendo duplicidade, exibe o alerta e so prossegue se o
+    usuario confirmar.
 7. Pre-vouchers pendentes da mesma competencia sao removidos para evitar
    duplicidade, respeitando os filtros de administradora e produtor.
 8. Os registros de `IMPORTA_VR` sao selecionados.
@@ -428,6 +431,54 @@ lote e utilizado para a emissao dos vouchers.
 
 Em caso de erro durante a geracao, a transacao e revertida e a mensagem e
 exibida ao usuario.
+
+### 10.1 Varredura de creditos em duplicidade
+
+Objetivo: detectar, antes do calculo, lancamentos repetidos em
+`IMPORTA_VR`, normalmente causados pela importacao do mesmo arquivo mais
+de uma vez.
+
+Criterios:
+
+- Escopo: `DT_INI_USO` igual a competencia informada; `ADMINISTRADORA`
+  igual a selecionada, ou todas quando o campo estiver vazio. O filtro de
+  produtor nao se aplica, pois `IMPORTA_VR` nao possui produtor.
+- Registros com `STATUS = 'C'` sao ignorados.
+- Dois registros sao duplicados quando todas as colunas da constante
+  `DUPLICATE_COLUMNS` sao identicas. Ficam de fora apenas `CNT_IMPORTA` e
+  `DT_IMPORTACAO`. Valores nulos iguais contam como identicos.
+
+Consulta (forma geral):
+
+```sql
+SELECT D.ADMINISTRADORA, PES.NOME, COUNT(*) GRUPOS, SUM(D.QTD_LINHAS - 1) EXCEDENTES
+FROM (
+    SELECT <colunas comparadas>, COUNT(*) QTD_LINHAS
+    FROM IMPORTA_VR IV
+    WHERE IV.DT_INI_USO = ? AND IV.STATUS <> 'C' [AND IV.ADMINISTRADORA = ?]
+    GROUP BY <colunas comparadas>
+    HAVING COUNT(*) > 1
+) D
+LEFT JOIN PESSOAS PES ON PES.PESSOA = D.ADMINISTRADORA
+GROUP BY D.ADMINISTRADORA, PES.NOME
+ORDER BY PES.NOME
+```
+
+Resultado: uma linha por administradora com a quantidade de grupos
+duplicados e de registros excedentes (linhas alem da primeira de cada
+grupo).
+
+Comportamento na tela (`_confirm_duplicates`):
+
+- Sem duplicidade: a geracao segue sem interrupcao.
+- Com duplicidade: alerta com nome da administradora, vigencia e
+  quantidades, totalizado ao final, perguntando se deseja continuar. A
+  opcao padrao e **Nao**. Ao cancelar, nada e gravado.
+- Erro na consulta: a geracao e interrompida e o erro exibido.
+
+A varredura e apenas informativa; nao altera nem exclui registros de
+`IMPORTA_VR`. Tempo medido no banco atual: 1 a 2 segundos para vigencias
+com cerca de 17 mil registros.
 
 ## 11. Regras de calculo
 
@@ -647,6 +698,8 @@ Devem ser validados:
 - Selecao da competencia pelo calendario.
 - Geracao de pre-vouchers.
 - Nao duplicacao de pre-vouchers.
+- Varredura de creditos em duplicidade com e sem administradora informada.
+- Alerta de duplicidade com opcao de cancelar a geracao.
 - Aplicacao de `SOBRE_TAXA`.
 - Aplicacao de `APENAS_COND_TAXA`.
 - Totalizador por produtor.

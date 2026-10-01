@@ -28,6 +28,39 @@ from tkcalendar import DateEntry
 
 from database import open_connection
 
+# Colunas de IMPORTA_VR comparadas na varredura de creditos em duplicidade.
+# Dois registros sao considerados duplicados quando todas estas colunas sao
+# identicas. Ficam de fora apenas CNT_IMPORTA e DT_IMPORTACAO, que mudam a
+# cada importacao do mesmo arquivo.
+DUPLICATE_COLUMNS: tuple[str, ...] = (
+    "CONTADOR",
+    "ADMINISTRADORA",
+    "NOME_CONDOMINIO",
+    "CNPJ_CONDOMINIO",
+    "UF_CONDOMINIO",
+    "ENDERECO_CONDOMINIO",
+    "BAIRRO_CONDOMINIO",
+    "CIDADE_CONDOMINIO",
+    "CEP_CONDOMINIO",
+    "DT_INI_USO",
+    "DT_FIM_USO",
+    "NOME_FUNCIONARIO",
+    "CPF_FUNCIONARIO",
+    "PRODUTO",
+    "DESCRICAO",
+    "QTD",
+    "TARIFA",
+    "VALOR",
+    "TAXA",
+    "REPASSE",
+    "FATURA",
+    "STATUS",
+    "OBS_CANCEL",
+    "DT_CANCEL",
+    "TX_FIXA",
+    "VALOR_TX_FIXA",
+)
+
 
 class RelatorioComissoesWindow(tk.Toplevel):
     """Reproduz o fluxo de geracao automatica do formulario Delphi."""
@@ -290,6 +323,8 @@ class RelatorioComissoesWindow(tk.Toplevel):
             return
         admin = self.administradoras.get(self.administradora.get())
         producer = self.produtores.get(self.produtor.get())
+        if not self._confirm_duplicates(reference_date, admin):
+            return
         try:
             self._delete_pending(reference_date, admin, producer)
             generated = self._generate_receipts(reference_date, admin, producer)
@@ -301,6 +336,93 @@ class RelatorioComissoesWindow(tk.Toplevel):
         except Exception as exc:
             self.connection.rollback()
             messagebox.showerror("Geracao de comissao", str(exc), parent=self)
+
+    def _find_duplicates(
+        self, reference_date: date, admin: str | None
+    ) -> list[tuple[Any, ...]]:
+        """Localiza creditos em duplicidade em IMPORTA_VR para a vigencia.
+
+        Devolve uma linha por administradora com o codigo, o nome, a
+        quantidade de grupos duplicados e a quantidade de registros
+        excedentes (linhas alem da primeira de cada grupo). Registros com
+        STATUS = 'C' nao participam da comparacao.
+        """
+        grouped = ", ".join(f"IV.{column}" for column in DUPLICATE_COLUMNS)
+        query = (
+            "SELECT D.ADMINISTRADORA, PES.NOME, COUNT(*) GRUPOS, "
+            "SUM(D.QTD_LINHAS - 1) EXCEDENTES "
+            f"FROM (SELECT {grouped}, COUNT(*) QTD_LINHAS FROM IMPORTA_VR IV "
+            "WHERE IV.DT_INI_USO = ? AND IV.STATUS <> 'C' "
+        )
+        parameters: list[Any] = [reference_date]
+        if admin:
+            query += "AND IV.ADMINISTRADORA = ? "
+            parameters.append(admin)
+        query += (
+            f"GROUP BY {grouped} HAVING COUNT(*) > 1) D "
+            "LEFT JOIN PESSOAS PES ON PES.PESSOA = D.ADMINISTRADORA "
+            "GROUP BY D.ADMINISTRADORA, PES.NOME ORDER BY PES.NOME"
+        )
+        cursor = self.connection.cursor()
+        cursor.execute(query, tuple(parameters))
+        return cursor.fetchall()
+
+    def _confirm_duplicates(self, reference_date: date, admin: str | None) -> bool:
+        """Alerta sobre duplicidades e pergunta se a geracao deve continuar."""
+        self.status.set("Verificando creditos em duplicidade...")
+        self.update_idletasks()
+        try:
+            duplicates = self._find_duplicates(reference_date, admin)
+        except Exception as exc:
+            self.status.set("Falha na verificacao de duplicidade")
+            messagebox.showerror(
+                "Verificacao de duplicidade",
+                f"Nao foi possivel verificar creditos em duplicidade:\n{exc}",
+                parent=self,
+            )
+            return False
+        if not duplicates:
+            self.status.set("Nenhum credito em duplicidade encontrado")
+            return True
+
+        vigencia = reference_date.strftime("%d/%m/%Y")
+        total_groups = sum(int(row[2] or 0) for row in duplicates)
+        total_excess = sum(int(row[3] or 0) for row in duplicates)
+        lines = [
+            f"Foram encontrados creditos em duplicidade na vigencia {vigencia} "
+            "em IMPORTA_VR:",
+            "",
+        ]
+        for code, name, groups, excess in duplicates:
+            label = str(name or code or "").strip()
+            lines.append(
+                f"- {label}: {int(excess or 0)} registro(s) duplicado(s) "
+                f"em {int(groups or 0)} grupo(s)"
+            )
+        lines.extend(
+            [
+                "",
+                f"Total: {total_excess} registro(s) duplicado(s) em "
+                f"{total_groups} grupo(s), em {len(duplicates)} administradora(s).",
+                "",
+                "Os registros duplicados serao incluidos no calculo da comissao.",
+                "Deseja continuar com a geracao mesmo assim?",
+            ]
+        )
+        self.status.set(
+            f"{total_excess} credito(s) em duplicidade em "
+            f"{len(duplicates)} administradora(s)"
+        )
+        proceed = messagebox.askyesno(
+            "Creditos em duplicidade",
+            "\n".join(lines),
+            icon=messagebox.WARNING,
+            default=messagebox.NO,
+            parent=self,
+        )
+        if not proceed:
+            self.status.set("Geracao cancelada pelo usuario")
+        return proceed
 
     def _delete_pending(
         self, reference_date: date, admin: str | None, producer: str | None
