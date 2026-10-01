@@ -445,8 +445,10 @@ Criterios:
   produtor nao se aplica, pois `IMPORTA_VR` nao possui produtor.
 - Registros com `STATUS = 'C'` sao ignorados.
 - Dois registros sao duplicados quando todas as colunas da constante
-  `DUPLICATE_COLUMNS` sao identicas. Ficam de fora apenas `CNT_IMPORTA` e
-  `DT_IMPORTACAO`. Valores nulos iguais contam como identicos.
+  `DUPLICATE_COLUMNS` sao identicas. Ficam de fora `CNT_IMPORTA` e
+  `DT_IMPORTACAO` (mudam a cada importacao) e `CONTADOR` (posicao da linha
+  dentro da importacao, que pode variar entre dois envios do mesmo
+  credito). Valores nulos iguais contam como identicos.
 
 Consulta (forma geral):
 
@@ -472,13 +474,61 @@ Comportamento na tela (`_confirm_duplicates`):
 
 - Sem duplicidade: a geracao segue sem interrupcao.
 - Com duplicidade: alerta com nome da administradora, vigencia e
-  quantidades, totalizado ao final, perguntando se deseja continuar. A
-  opcao padrao e **Nao**. Ao cancelar, nada e gravado.
-- Erro na consulta: a geracao e interrompida e o erro exibido.
+  quantidades, totalizado ao final, e a pergunta "Anular essas
+  duplicidades temporariamente para emissao dos Recibos?", com tres
+  respostas. **Sim** executa a anulacao (secao 10.2), confirma a
+  transacao e prossegue. **Nao** prossegue sem anular. **Cancelar**
+  (opcao padrao) interrompe sem gravar nada.
+- Erro na consulta ou na anulacao: a transacao e revertida, a geracao e
+  interrompida e o erro exibido.
+- Se a quantidade anulada for diferente da quantidade de excedentes
+  informada no alerta, um aviso adicional pede conferencia da tabela.
 
-A varredura e apenas informativa; nao altera nem exclui registros de
-`IMPORTA_VR`. Tempo medido no banco atual: 1 a 2 segundos para vigencias
-com cerca de 17 mil registros.
+Tempo medido no banco atual: 0,5 a 2 segundos para vigencias com 11 a 17
+mil registros.
+
+### 10.2 Anulacao temporaria de duplicidades
+
+Metodo `_annul_duplicates`. Marca com `STATUS = 'D'` os registros
+duplicados da vigencia (e da administradora, quando informada). Em cada
+grupo de registros identicos, permanece com `STATUS = 'A'` apenas o
+importado mais recentemente, pela ordem:
+
+1. Maior `DT_IMPORTACAO`.
+2. Em empate, maior `CNT_IMPORTA`.
+3. Em novo empate (linha repetida dentro do mesmo arquivo), maior
+   `CONTADOR`.
+
+Comando (forma geral):
+
+```sql
+UPDATE IMPORTA_VR IV SET STATUS = 'D'
+WHERE IV.DT_INI_USO = ? AND IV.STATUS = 'A' [AND IV.ADMINISTRADORA = ?]
+  AND EXISTS (
+      SELECT 1 FROM IMPORTA_VR NEWER
+      WHERE <NEWER.coluna IS NOT DISTINCT FROM IV.coluna, para cada coluna comparada>
+        AND (NEWER.DT_IMPORTACAO > IV.DT_IMPORTACAO
+         OR (NEWER.DT_IMPORTACAO = IV.DT_IMPORTACAO AND NEWER.CNT_IMPORTA > IV.CNT_IMPORTA)
+         OR (NEWER.DT_IMPORTACAO = IV.DT_IMPORTACAO AND NEWER.CNT_IMPORTA = IV.CNT_IMPORTA
+             AND NEWER.CONTADOR > IV.CONTADOR))
+  )
+```
+
+Consequencias do status `D`:
+
+- Todos os filtros de `IMPORTA_VR` em `relatorio_comissoes.py` usam
+  `STATUS NOT IN ('C', 'D')`: geracao de pre-vouchers, contagem de
+  beneficios, valor de carga e valor de taxa na grade e no voucher, e a
+  propria varredura de duplicidade.
+- Nenhum registro e apagado. A reversao e manual:
+  `UPDATE IMPORTA_VR SET STATUS = 'A' WHERE STATUS = 'D' AND DT_INI_USO = ?`.
+- O status `D` e exclusivo deste tratamento; antes dele a tabela possuia
+  apenas `A` e `C`.
+
+Validacao realizada na vigencia 01/10/2026, em transacao revertida ao
+final: 103 registros anulados de 103 esperados, nenhuma duplicidade
+restante, e cada registro `D` possui um registro `A` mais recente no
+mesmo grupo.
 
 ## 11. Regras de calculo
 
@@ -699,7 +749,10 @@ Devem ser validados:
 - Geracao de pre-vouchers.
 - Nao duplicacao de pre-vouchers.
 - Varredura de creditos em duplicidade com e sem administradora informada.
-- Alerta de duplicidade com opcao de cancelar a geracao.
+- Alerta de duplicidade com as opcoes Sim, Nao e Cancelar.
+- Anulacao temporaria (`STATUS = 'D'`) mantendo apenas o registro mais
+  recente de cada grupo.
+- Exclusao dos registros `D` do calculo, da grade e do voucher.
 - Aplicacao de `SOBRE_TAXA`.
 - Aplicacao de `APENAS_COND_TAXA`.
 - Totalizador por produtor.

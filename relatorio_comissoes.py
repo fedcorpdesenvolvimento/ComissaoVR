@@ -30,10 +30,10 @@ from database import open_connection
 
 # Colunas de IMPORTA_VR comparadas na varredura de creditos em duplicidade.
 # Dois registros sao considerados duplicados quando todas estas colunas sao
-# identicas. Ficam de fora apenas CNT_IMPORTA e DT_IMPORTACAO, que mudam a
-# cada importacao do mesmo arquivo.
+# identicas. Ficam de fora CNT_IMPORTA e DT_IMPORTACAO, que mudam a cada
+# importacao do mesmo arquivo, e CONTADOR, que e apenas a posicao da linha
+# dentro da importacao e pode variar entre dois envios do mesmo credito.
 DUPLICATE_COLUMNS: tuple[str, ...] = (
-    "CONTADOR",
     "ADMINISTRADORA",
     "NOME_CONDOMINIO",
     "CNPJ_CONDOMINIO",
@@ -352,7 +352,7 @@ class RelatorioComissoesWindow(tk.Toplevel):
             "SELECT D.ADMINISTRADORA, PES.NOME, COUNT(*) GRUPOS, "
             "SUM(D.QTD_LINHAS - 1) EXCEDENTES "
             f"FROM (SELECT {grouped}, COUNT(*) QTD_LINHAS FROM IMPORTA_VR IV "
-            "WHERE IV.DT_INI_USO = ? AND IV.STATUS <> 'C' "
+            "WHERE IV.DT_INI_USO = ? AND IV.STATUS NOT IN ('C', 'D') "
         )
         parameters: list[Any] = [reference_date]
         if admin:
@@ -405,24 +405,94 @@ class RelatorioComissoesWindow(tk.Toplevel):
                 f"Total: {total_excess} registro(s) duplicado(s) em "
                 f"{total_groups} grupo(s), em {len(duplicates)} administradora(s).",
                 "",
-                "Os registros duplicados serao incluidos no calculo da comissao.",
-                "Deseja continuar com a geracao mesmo assim?",
+                "Anular essas duplicidades temporariamente para emissao dos Recibos?",
+                "",
+                "SIM: marca os registros duplicados com status 'D' (mantendo "
+                "apenas o importado mais recentemente) e gera a previa.",
+                "NAO: gera a previa incluindo os duplicados no calculo.",
+                "CANCELAR: nao gera nada.",
             ]
         )
         self.status.set(
             f"{total_excess} credito(s) em duplicidade em "
             f"{len(duplicates)} administradora(s)"
         )
-        proceed = messagebox.askyesno(
+        answer = messagebox.askyesnocancel(
             "Creditos em duplicidade",
             "\n".join(lines),
             icon=messagebox.WARNING,
-            default=messagebox.NO,
+            default=messagebox.CANCEL,
             parent=self,
         )
-        if not proceed:
+        if answer is None:
             self.status.set("Geracao cancelada pelo usuario")
-        return proceed
+            return False
+        if answer is False:
+            self.status.set("Geracao prossegue com os registros duplicados")
+            return True
+
+        self.status.set("Anulando creditos em duplicidade...")
+        self.update_idletasks()
+        try:
+            annulled = self._annul_duplicates(reference_date, admin)
+            self.connection.commit()
+        except Exception as exc:
+            self.connection.rollback()
+            self.status.set("Falha ao anular duplicidades")
+            messagebox.showerror(
+                "Anulacao de duplicidades",
+                f"Nao foi possivel anular os registros duplicados:\n{exc}",
+                parent=self,
+            )
+            return False
+        self.status.set(
+            f"{annulled} registro(s) duplicado(s) marcado(s) com status 'D'"
+        )
+        if annulled != total_excess:
+            messagebox.showwarning(
+                "Anulacao de duplicidades",
+                f"Esperava-se anular {total_excess} registro(s), mas "
+                f"{annulled} foram marcados com status 'D'.\n"
+                "Confira a tabela IMPORTA_VR antes de emitir os vouchers.",
+                parent=self,
+            )
+        return True
+
+    def _annul_duplicates(self, reference_date: date, admin: str | None) -> int:
+        """Marca com STATUS = 'D' os creditos duplicados da vigencia.
+
+        Em cada grupo de registros identicos (colunas de DUPLICATE_COLUMNS),
+        apenas o importado mais recentemente permanece com STATUS = 'A':
+        maior DT_IMPORTACAO; em caso de empate, maior CNT_IMPORTA; se ainda
+        empatar (linha repetida dentro do mesmo arquivo importado), maior
+        CONTADOR. Todos os demais recebem 'D'. Devolve a quantidade de
+        registros alterados. O commit e responsabilidade de quem chama.
+        """
+        same_group = " AND ".join(
+            f"NEWER.{column} IS NOT DISTINCT FROM IV.{column}"
+            for column in DUPLICATE_COLUMNS
+        )
+        query = (
+            "UPDATE IMPORTA_VR IV SET STATUS = 'D' "
+            "WHERE IV.DT_INI_USO = ? AND IV.STATUS = 'A' "
+        )
+        parameters: list[Any] = [reference_date]
+        if admin:
+            query += "AND IV.ADMINISTRADORA = ? "
+            parameters.append(admin)
+        query += (
+            "AND EXISTS (SELECT 1 FROM IMPORTA_VR NEWER "
+            f"WHERE {same_group} "
+            "AND (NEWER.DT_IMPORTACAO > IV.DT_IMPORTACAO "
+            "OR (NEWER.DT_IMPORTACAO = IV.DT_IMPORTACAO "
+            "AND NEWER.CNT_IMPORTA > IV.CNT_IMPORTA) "
+            "OR (NEWER.DT_IMPORTACAO = IV.DT_IMPORTACAO "
+            "AND NEWER.CNT_IMPORTA = IV.CNT_IMPORTA "
+            "AND NEWER.CONTADOR > IV.CONTADOR)))"
+        )
+        cursor = self.connection.cursor()
+        cursor.execute(query, tuple(parameters))
+        return int(cursor.rowcount or 0)
 
     def _delete_pending(
         self, reference_date: date, admin: str | None, producer: str | None
@@ -453,7 +523,7 @@ class RelatorioComissoesWindow(tk.Toplevel):
             "JOIN NOMES_PRODUTOS_VR NPV ON NPV.NOME_PRODUTO = IV.PRODUTO "
             "JOIN TAB_COMISSAO_ADM_VR TCA ON TCA.ADMINISTRADORA = IV.ADMINISTRADORA "
             "AND TCA.CONTA = NPV.CONTA AND TCA.STATUS = 'A' "
-            "WHERE IV.DT_INI_USO = ? AND IV.STATUS <> 'C' "
+            "WHERE IV.DT_INI_USO = ? AND IV.STATUS NOT IN ('C', 'D') "
             "AND (TCA.APENAS_COND_TAXA = 'N' OR IV.TAXA > 0) "
         )
         parameters: list[Any] = [reference_date]
@@ -534,18 +604,18 @@ class RelatorioComissoesWindow(tk.Toplevel):
             "WHERE IVB.ADMINISTRADORA = RCV.ADMINISTRADORA "
             "AND IVB.PRODUTO = NPV.NOME_PRODUTO "
             "AND IVB.DT_INI_USO = RCV.INI_VIGENCIA "
-            "AND IVB.STATUS <> 'C') BENEFICIOS, "
+            "AND IVB.STATUS NOT IN ('C', 'D')) BENEFICIOS, "
             "(SELECT COALESCE(SUM(IVC.TARIFA), 0) FROM IMPORTA_VR IVC "
             "WHERE IVC.ADMINISTRADORA = RCV.ADMINISTRADORA "
             "AND IVC.PRODUTO = NPV.NOME_PRODUTO "
             "AND IVC.DT_INI_USO = RCV.INI_VIGENCIA "
-            "AND IVC.STATUS <> 'C') VALOR_CARGA, "
+            "AND IVC.STATUS NOT IN ('C', 'D')) VALOR_CARGA, "
             "(SELECT COALESCE(SUM(IVT.TARIFA * IVT.TAXA / 100), 0) "
             "FROM IMPORTA_VR IVT "
             "WHERE IVT.ADMINISTRADORA = RCV.ADMINISTRADORA "
             "AND IVT.PRODUTO = NPV.NOME_PRODUTO "
             "AND IVT.DT_INI_USO = RCV.INI_VIGENCIA "
-            "AND IVT.STATUS <> 'C') VALOR_TAXA "
+            "AND IVT.STATUS NOT IN ('C', 'D')) VALOR_TAXA "
             "FROM RECIBOS_COMISSAO_VR RCV "
             "LEFT JOIN NOMES_PRODUTOS_VR NPV ON NPV.CONTA = RCV.CONTA "
             "LEFT JOIN PESSOAS PA ON PA.PESSOA = RCV.ADMINISTRADORA "
@@ -752,13 +822,13 @@ class RelatorioComissoesWindow(tk.Toplevel):
             "WHERE IVC.ADMINISTRADORA = RCV.ADMINISTRADORA "
             "AND IVC.PRODUTO = NPV.NOME_PRODUTO "
             "AND IVC.DT_INI_USO = RCV.INI_VIGENCIA "
-            "AND IVC.STATUS <> 'C') VALOR_CARGA, "
+            "AND IVC.STATUS NOT IN ('C', 'D')) VALOR_CARGA, "
             "(SELECT COALESCE(SUM(IVT.TARIFA * IVT.TAXA / 100), 0) "
             "FROM IMPORTA_VR IVT "
             "WHERE IVT.ADMINISTRADORA = RCV.ADMINISTRADORA "
             "AND IVT.PRODUTO = NPV.NOME_PRODUTO "
             "AND IVT.DT_INI_USO = RCV.INI_VIGENCIA "
-            "AND IVT.STATUS <> 'C') VALOR_TAXA "
+            "AND IVT.STATUS NOT IN ('C', 'D')) VALOR_TAXA "
             "FROM RECIBOS_COMISSAO_VR RCV "
             "LEFT JOIN NOMES_PRODUTOS_VR NPV ON NPV.CONTA = RCV.CONTA "
             "LEFT JOIN PESSOAS PA ON PA.PESSOA = RCV.ADMINISTRADORA "

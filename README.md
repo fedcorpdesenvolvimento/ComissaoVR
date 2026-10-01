@@ -252,15 +252,31 @@ competencia informada, para a administradora selecionada ou para todas
 quando o campo estiver vazio.
 
 Dois registros sao considerados duplicados quando **todas** as colunas sao
-identicas, exceto `CNT_IMPORTA` e `DT_IMPORTACAO`. Registros com
+identicas, exceto `CNT_IMPORTA`, `DT_IMPORTACAO` e `CONTADOR`. Registros com
 `STATUS = 'C'` nao participam da comparacao. A lista de colunas comparadas
 fica na constante `DUPLICATE_COLUMNS` de `relatorio_comissoes.py`.
 
 Quando ha duplicidade, e exibido um alerta com, para cada administradora,
 o nome, a vigencia e a quantidade de registros duplicados (linhas alem da
-primeira de cada grupo) e de grupos. O usuario escolhe entre continuar a
-geracao ou cancelar. Se continuar, os registros duplicados entram no
-calculo normalmente; a correcao deve ser feita na importacao.
+primeira de cada grupo) e de grupos, seguido da pergunta
+**"Anular essas duplicidades temporariamente para emissao dos Recibos?"**:
+
+- **Sim**: os registros duplicados recebem `STATUS = 'D'` e a previa e
+  gerada em seguida. Em cada grupo, apenas o registro importado mais
+  recentemente permanece com `STATUS = 'A'` (maior `DT_IMPORTACAO`; em
+  empate, maior `CNT_IMPORTA`; em novo empate, maior `CONTADOR`).
+- **Nao**: a previa e gerada com os duplicados incluidos no calculo.
+- **Cancelar**: nada e gravado nem gerado.
+
+Registros com `STATUS = 'D'` sao ignorados pelo calculo da comissao, pela
+grade, pelo voucher e por novas varreduras, da mesma forma que os
+cancelados (`C`). A anulacao nao apaga nada; para reverter, basta voltar o
+status para `A`:
+
+```sql
+UPDATE IMPORTA_VR SET STATUS = 'A'
+WHERE STATUS = 'D' AND DT_INI_USO = '2026-10-01' /* AND ADMINISTRADORA = '...' */
+```
 
 ## Regra de calculo
 
