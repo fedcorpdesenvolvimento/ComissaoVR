@@ -227,10 +227,11 @@ produtos quando existe registro ativo em `TAB_COMISSAO_ADM_VR`.
 3. Opcionalmente selecione o produtor.
 4. Escolha a competencia no calendario ou clique em **Hoje**.
 5. Clique em **Relatorio de Previa**. O sistema primeiro faz a varredura
-   de creditos em duplicidade (veja abaixo). Se nao houver duplicidade, ou
-   se o usuario confirmar a continuacao, apaga os pre-vouchers pendentes da
-   competencia, gera os novos, carrega a grade e abre o dialogo para salvar
-   o PDF resumido em A4 paisagem (`relatorio_previa_AAAAMMDD.pdf`).
+   de creditos em duplicidade (veja abaixo) e, havendo duplicidade,
+   pergunta se deseja anula-las temporariamente. Em seguida apaga os
+   pre-vouchers pendentes da competencia, gera os novos, carrega a grade e
+   abre o dialogo para salvar o PDF resumido em A4 paisagem
+   (`relatorio_previa_AAAAMMDD.pdf`).
 6. Clique em **Emissao de Voucher** para gerar o modelo financeiro baseado no
    ReportBuilder Delphi, em A4 retrato (`VoucherVR_AAAAMMDD.pdf`). E
    necessario ter gerado a previa antes.
